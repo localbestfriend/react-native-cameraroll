@@ -26,6 +26,7 @@ import android.os.FileUtils;
 import android.provider.MediaStore;
 import android.provider.MediaStore.Images;
 import android.text.TextUtils;
+import java.nio.channels.FileChannel;
 
 import com.facebook.common.logging.FLog;
 import com.facebook.react.bridge.GuardedAsyncTask;
@@ -224,7 +225,6 @@ public class CameraRollModule extends ReactContextBaseJavaModule {
           }
         }
       }
-    }
     }
   }
 
