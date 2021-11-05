@@ -141,107 +141,82 @@ public class CameraRollModule extends ReactContextBaseJavaModule {
     @Override
     protected void doInBackgroundGuarded(Void... params) {
       File source = new File(mUri.getPath());
-      FileInputStream input = null;
-      OutputStream output = null;
+      FileChannel input = null, output = null;
       try {
-        String album = mOptions.getString("album");
-        boolean isAlbumPresent = !TextUtils.isEmpty(album);
-
-        // Android Q and above
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          Uri mediaCollection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY);
-          ContentValues mediaDetails = new ContentValues();
-          if (isAlbumPresent) {
-            // Notes: I got this error when using Environment.DIRECTORY_MOVIES
-            // Primary directory Movies not allowed for content://media/external_primary/file; allowed directories are [Download, Documents]
-            String relativePath = Environment.DIRECTORY_DOCUMENTS + File.separator + album;
-            mediaDetails.put(Images.Media.RELATIVE_PATH, relativePath);
+        boolean isAlbumPresent = !"".equals(mOptions.getString("album"));
+        
+        final File environment;
+        // Media is not saved into an album when using Environment.DIRECTORY_DCIM.
+        if (isAlbumPresent) {
+          if ("video".equals(mOptions.getString("type"))) {
+            environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
+          } else {
+            environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
           }
-          mediaDetails.put(Images.Media.DISPLAY_NAME, source.getName());
-          mediaDetails.put(Images.Media.IS_PENDING, 1);
-          ContentResolver resolver = mContext.getContentResolver();
-          Uri mediaContentUri = resolver
-                  .insert(mediaCollection, mediaDetails);
-          output = resolver.openOutputStream(mediaContentUri);
-          input = new FileInputStream(source);
-          FileUtils.copy(input, output);
-          mediaDetails.clear();
-          mediaDetails.put(Images.Media.IS_PENDING, 0);
-          resolver.update(mediaContentUri, mediaDetails, null, null);
         } else {
-          final File environment;
-          // Media is not saved into an album when using Environment.DIRECTORY_DCIM.
-          if (isAlbumPresent) {
-            if ("video".equals(mOptions.getString("type"))) {
-              environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES);
-            } else {
-              environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES);
-            }
-          } else {
-            environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM);
-          }
-          File exportDir;
-          if (isAlbumPresent) {
-            exportDir = new File(environment, album);
-            if (!exportDir.exists() && !exportDir.mkdirs()) {
-              mPromise.reject(ERROR_UNABLE_TO_LOAD, "Album Directory not created. Did you request WRITE_EXTERNAL_STORAGE?");
-              return;
-            }
-          } else {
-            exportDir = environment;
-          }
+          environment = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM);
+        }
 
-          if (!exportDir.isDirectory()) {
-            mPromise.reject(ERROR_UNABLE_TO_LOAD, "External media storage directory not available");
+        File exportDir;
+        if (isAlbumPresent) {
+          exportDir = new File(environment, mOptions.getString("album"));
+          if (!exportDir.exists() && !exportDir.mkdirs()) {
+            mPromise.reject(ERROR_UNABLE_TO_LOAD, "Album Directory not created. Did you request WRITE_EXTERNAL_STORAGE?");
             return;
           }
-          File dest = new File(exportDir, source.getName());
-          int n = 0;
-          String fullSourceName = source.getName();
-          String sourceName, sourceExt;
-          if (fullSourceName.indexOf('.') >= 0) {
-            sourceName = fullSourceName.substring(0, fullSourceName.lastIndexOf('.'));
-            sourceExt = fullSourceName.substring(fullSourceName.lastIndexOf('.'));
-          } else {
-            sourceName = fullSourceName;
-            sourceExt = "";
-          }
-          while (!dest.createNewFile()) {
-            dest = new File(exportDir, sourceName + "_" + (n++) + sourceExt);
-          }
-          input = new FileInputStream(source);
-          output = new FileOutputStream(dest);
-          ((FileOutputStream) output).getChannel()
-                  .transferFrom(input.getChannel(), 0, input.getChannel().size());
-          input.close();
-          output.close();
-
-          MediaScannerConnection.scanFile(
-                  mContext,
-                  new String[]{dest.getAbsolutePath()},
-                  null,
-                  new MediaScannerConnection.OnScanCompletedListener() {
-                    @Override
-                    public void onScanCompleted(String path, Uri uri) {
-                      if (uri != null) {
-                        mPromise.resolve(uri.toString());
-                      } else {
-                        mPromise.reject(ERROR_UNABLE_TO_SAVE, "Could not add image to gallery");
-                      }
-                    }
-                  });
+        } else {
+          exportDir = environment;
         }
+
+        if (!exportDir.isDirectory()) {
+          mPromise.reject(ERROR_UNABLE_TO_LOAD, "External media storage directory not available");
+          return;
+        }
+        File dest = new File(exportDir, source.getName());
+        int n = 0;
+        String fullSourceName = source.getName();
+        String sourceName, sourceExt;
+        if (fullSourceName.indexOf('.') >= 0) {
+          sourceName = fullSourceName.substring(0, fullSourceName.lastIndexOf('.'));
+          sourceExt = fullSourceName.substring(fullSourceName.lastIndexOf('.'));
+        } else {
+          sourceName = fullSourceName;
+          sourceExt = "";
+        }
+        while (!dest.createNewFile()) {
+          dest = new File(exportDir, sourceName + "_" + (n++) + sourceExt);
+        }
+        input = new FileInputStream(source).getChannel();
+        output = new FileOutputStream(dest).getChannel();
+        output.transferFrom(input, 0, input.size());
+        input.close();
+        output.close();
+
+        MediaScannerConnection.scanFile(
+            mContext,
+            new String[]{dest.getAbsolutePath()},
+            null,
+            new MediaScannerConnection.OnScanCompletedListener() {
+              @Override
+              public void onScanCompleted(String path, Uri uri) {
+                if (uri != null) {
+                  mPromise.resolve(uri.toString());
+                } else {
+                  mPromise.reject(ERROR_UNABLE_TO_SAVE, "Could not add image to gallery");
+                }
+              }
+            });
       } catch (IOException e) {
         mPromise.reject(e);
       } finally {
-        if (input != null) {
+        if (input != null && input.isOpen()) {
           try {
             input.close();
           } catch (IOException e) {
             FLog.e(ReactConstants.TAG, "Could not close input channel", e);
           }
         }
-        if (output != null) {
+        if (output != null && output.isOpen()) {
           try {
             output.close();
           } catch (IOException e) {
@@ -249,6 +224,7 @@ public class CameraRollModule extends ReactContextBaseJavaModule {
           }
         }
       }
+    }
     }
   }
 
